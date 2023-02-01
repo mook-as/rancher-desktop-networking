@@ -15,7 +15,6 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/pkg/errors"
-	"github.com/rancher-sandbox/rancher-desktop-host-resolver/pkg/vmsock"
 	"github.com/sirupsen/logrus"
 	"github.com/songgao/packets/ethernet"
 	"github.com/songgao/water"
@@ -25,15 +24,22 @@ import (
 	"github.com/linuxkit/virtsock/pkg/vsock"
 )
 
-var tapIface string
+var (
+	tapIface string
+	debug    bool
+)
 
 const (
-	defaultTapDevice = "eth1"
-	defaultMacAddr = "5a:94:ef:e4:0c:ee"
-	defaultMTU = 4000
+	defaultTapDevice   = "eth1"
+	defaultMacAddr     = "5a:94:ef:e4:0c:ee"
+	defaultMTU         = 4000
+	SeedPhrase         = "github.com/rancher-sandbox/rancher-desktop-networking"
+	vsockHandshakePort = 6669
+	vsockDialPort      = 6655
 )
 
 func main() {
+	flag.BoolVar(&debug, "debug", false, "enable debug flag")
 	flag.StringVar(&tapIface, "tap-interface", defaultTapDevice, "tap interface name")
 	flag.Parse()
 
@@ -58,9 +64,9 @@ func main() {
 	}
 }
 
-func run() error{
-	conn, err := vsock.Dial(vsock.CIDHost, uint32(6655))
-	if err != nil{
+func run() error {
+	conn, err := vsock.Dial(vsock.CIDHost, vsockDialPort)
+	if err != nil {
 		return errors.Wrap(err, "cannot connect to host")
 	}
 	defer conn.Close()
@@ -80,20 +86,24 @@ func run() error{
 			Name: tapIface,
 		},
 	})
-	if err != nil{
+	if err != nil {
 		return errors.Wrapf(err, "cannot create %v tap device", tapIface)
 	}
 	defer tap.Close()
-	if err := linkUp(tapIface, defaultMacAddr); err != nil{
+	if err := linkUp(tapIface, defaultMacAddr); err != nil {
 		return errors.Wrapf(err, "cannot set mac address [%s] for %s tap device", defaultMacAddr, tapIface)
 	}
 
 	errCh := make(chan error, 1)
 	go tx(conn, tap, errCh, defaultMTU)
 	go rx(conn, tap, errCh, defaultMTU)
-	go dhcp(tapIface, errCh)
+	go func() {
+		if err := dhcp(tapIface); err != nil {
+			errCh <- errors.Wrap(err, "dhcp error")
+		}
+	}()
 
-	return <- errCh
+	return <-errCh
 }
 
 func linkUp(iface string, mac string) error {
@@ -114,27 +124,25 @@ func linkUp(iface string, mac string) error {
 	return netlink.LinkSetUp(link)
 }
 
-func dhcp(iface string, errCh chan error){
+func dhcp(iface string) error {
 	if _, err := exec.LookPath("udhcpc"); err == nil { // busybox dhcp client
 		cmd := exec.Command("udhcpc", "-f", "-q", "-i", iface, "-v")
 		cmd.Stderr = os.Stderr
 		cmd.Stdout = os.Stdout
-		errCh <- errors.Wrap(cmd.Run(), "udhcp error")
-		return
+		return cmd.Run()
 	}
 	cmd := exec.Command("dhclient", "-4", "-d", "-v", iface)
 	cmd.Stderr = os.Stderr
 	cmd.Stdout = os.Stdout
-	errCh <- errors.Wrap(cmd.Run(), "dhclient error")
+	return cmd.Run()
 }
 
 func listenForHandshake() {
-	l, err := vsock.Listen(vsock.CIDAny, uint32(7878))
+	l, err := vsock.Listen(vsock.CIDAny, vsockHandshakePort)
 	if err != nil {
 		logrus.Fatalf("listenForHandshake listen failed: %v", err)
 	}
 	defer l.Close()
-	fmt.Println(vsock.CIDHost)
 
 	for {
 		conn, err := l.Accept()
@@ -142,7 +150,7 @@ func listenForHandshake() {
 			logrus.Errorf("listenForHandshake connection accept: %v", err)
 			continue
 		}
-		_, err = conn.Write([]byte(vmsock.SeedPhrase))
+		_, err = conn.Write([]byte(SeedPhrase))
 		if err != nil {
 			logrus.Errorf("listenForHandshake writing CIDHost: %v\n", err)
 		}
@@ -164,10 +172,10 @@ func rx(conn net.Conn, tap *water.Interface, errCh chan error, mtu int) {
 		}
 		frame = frame[:n]
 
-		// TODO: DEBUG ONLY
-		packet := gopacket.NewPacket(frame, layers.LayerTypeEthernet, gopacket.Default)
-		logrus.Info(packet.String())
-		///////////////////
+		if debug {
+			packet := gopacket.NewPacket(frame, layers.LayerTypeEthernet, gopacket.Default)
+			logrus.Info(packet.String())
+		}
 
 		size := make([]byte, 2)
 		binary.LittleEndian.PutUint16(size, uint16(n))
@@ -209,10 +217,10 @@ func tx(conn net.Conn, tap *water.Interface, errCh chan error, mtu int) {
 			return
 		}
 
-		// TODO: DEBUG ONLY
-		packet := gopacket.NewPacket(buf[:size], layers.LayerTypeEthernet, gopacket.Default)
-		logrus.Info(packet.String())
-		///////////////////
+		if debug {
+			packet := gopacket.NewPacket(buf[:size], layers.LayerTypeEthernet, gopacket.Default)
+			logrus.Info(packet.String())
+		}
 
 		if _, err := tap.Write(buf[:size]); err != nil {
 			errCh <- errors.Wrap(err, "cannot write packet to tap")
