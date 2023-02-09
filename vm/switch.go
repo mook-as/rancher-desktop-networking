@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -19,6 +18,7 @@ import (
 	"github.com/songgao/packets/ethernet"
 	"github.com/songgao/water"
 	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netns"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 
 	"github.com/linuxkit/virtsock/pkg/vsock"
@@ -30,7 +30,8 @@ var (
 )
 
 const (
-	defaultTapDevice   = "eth1"
+	defaultNameSpace   = "rd1"
+	defaultTapDevice   = "eth0"
 	defaultMacAddr     = "5a:94:ef:e4:0c:ee"
 	defaultMTU         = 4000
 	SeedPhrase         = "github.com/rancher-sandbox/rancher-desktop-networking"
@@ -44,16 +45,16 @@ func main() {
 	flag.Parse()
 
 	go listenForHandshake()
-	// equivalent to: `ip link show`
-	links, err := netlink.LinkList()
-	if err != nil {
-		log.Fatalf("vmSwitch getting link devices failed: %v", err)
-	}
 
-	for _, link := range links {
-		if link.Attrs().Name == defaultTapDevice {
-			log.Fatalf("%s interface already exist, exiting now...", defaultTapDevice)
-		}
+	rdNs, err := configureNamespace(defaultNameSpace)
+	if err != nil {
+		logrus.Fatal(err)
+	}
+	defer rdNs.Close()
+
+	// this should never happend
+	if err := checkForExsitingIf(defaultTapDevice); err != nil {
+		logrus.Fatal(err)
 	}
 
 	for {
@@ -106,6 +107,37 @@ func run() error {
 	return <-errCh
 }
 
+func configureNamespace(ns string) (netns.NsHandle, error) {
+	// intentionally ignoring this error
+	_ = netns.DeleteNamed(ns)
+
+	rdNs, err := netns.NewNamed(ns)
+	if err != nil {
+		return netns.None(), errors.Wrap(err, "creating new namespace failed")
+	}
+	if err := netns.Set(rdNs); err != nil {
+		return rdNs, errors.Wrapf(err, "setting namespace to %s failed", ns)
+	}
+
+	logrus.Infof("created and set new namespace %v %v", ns, rdNs.String())
+	return rdNs, nil
+}
+
+func checkForExsitingIf(ifName string) error {
+	// equivalent to: `ip link show`
+	links, err := netlink.LinkList()
+	if err != nil {
+		return errors.Wrapf(err, "getting link devices failed")
+	}
+
+	for _, link := range links {
+		if link.Attrs().Name == ifName {
+			return errors.Errorf("%s interface already exist, exiting now...", ifName)
+		}
+	}
+	return nil
+}
+
 func linkUp(iface string, mac string) error {
 	link, err := netlink.LinkByName(iface)
 	if err != nil {
@@ -121,6 +153,8 @@ func linkUp(iface string, mac string) error {
 	if err := netlink.LinkSetHardwareAddr(link, hw); err != nil {
 		return err
 	}
+
+	logrus.Debugf("successful link setup %+v\n", link)
 	return netlink.LinkSetUp(link)
 }
 

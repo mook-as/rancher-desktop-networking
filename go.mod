@@ -27,13 +27,13 @@ require (
 )
 
 require (
-	github.com/Microsoft/go-winio v0.6.0 // indirect
+	github.com/Microsoft/go-winio v0.6.0
 	github.com/containers/gvisor-tap-vsock v0.5.0
 	github.com/dustin/go-humanize v1.0.1
 	github.com/google/btree v1.0.1 // indirect
 	github.com/rancher-sandbox/rancher-desktop/src/go/wsl-helper v0.0.0-20220712232929-bac01a348036 // indirect
-	github.com/vishvananda/netns v0.0.0-20211101163701-50045581ed74 // indirect
+	github.com/vishvananda/netns v0.0.0-20211101163701-50045581ed74
 	golang.org/x/sync v0.1.0
-	golang.org/x/sys v0.4.0 // indirect
+	golang.org/x/sys v0.4.0
 	golang.org/x/time v0.0.0-20191024005414-555d28b269f0 // indirect
 )
