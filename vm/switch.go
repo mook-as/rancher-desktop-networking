@@ -18,7 +18,6 @@ import (
 	"github.com/songgao/packets/ethernet"
 	"github.com/songgao/water"
 	"github.com/vishvananda/netlink"
-	"github.com/vishvananda/netns"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 
 	"github.com/linuxkit/virtsock/pkg/vsock"
@@ -45,12 +44,6 @@ func main() {
 	flag.Parse()
 
 	go listenForHandshake()
-
-	rdNs, err := configureNamespace(defaultNameSpace)
-	if err != nil {
-		logrus.Fatal(err)
-	}
-	defer rdNs.Close()
 
 	// this should never happend
 	if err := checkForExsitingIf(defaultTapDevice); err != nil {
@@ -94,33 +87,18 @@ func run() error {
 	if err := linkUp(tapIface, defaultMacAddr); err != nil {
 		return errors.Wrapf(err, "cannot set mac address [%s] for %s tap device", defaultMacAddr, tapIface)
 	}
+	if err := loopbackUp(); err != nil {
+		return errors.Wrap(err, "failed enable loop back")
+	}
 
 	errCh := make(chan error, 1)
 	go tx(conn, tap, errCh, defaultMTU)
 	go rx(conn, tap, errCh, defaultMTU)
-	go func() {
-		if err := dhcp(tapIface); err != nil {
-			errCh <- errors.Wrap(err, "dhcp error")
-		}
-	}()
+	if err := dhcp(tapIface); err != nil {
+		errCh <- errors.Wrap(err, "dhcp error")
+	}
 
 	return <-errCh
-}
-
-func configureNamespace(ns string) (netns.NsHandle, error) {
-	// intentionally ignoring this error
-	_ = netns.DeleteNamed(ns)
-
-	rdNs, err := netns.NewNamed(ns)
-	if err != nil {
-		return netns.None(), errors.Wrap(err, "creating new namespace failed")
-	}
-	if err := netns.Set(rdNs); err != nil {
-		return rdNs, errors.Wrapf(err, "setting namespace to %s failed", ns)
-	}
-
-	logrus.Infof("created and set new namespace %v %v", ns, rdNs.String())
-	return rdNs, nil
 }
 
 func checkForExsitingIf(ifName string) error {
@@ -136,6 +114,15 @@ func checkForExsitingIf(ifName string) error {
 		}
 	}
 	return nil
+}
+
+func loopbackUp() error {
+	lo, err := netlink.LinkByName("lo")
+	if err != nil {
+		return err
+	}
+
+	return netlink.LinkSetUp(lo)
 }
 
 func linkUp(iface string, mac string) error {
