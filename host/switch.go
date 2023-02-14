@@ -42,7 +42,7 @@ const (
 	vsockPort            = 6655
 	vsockHandshakePort   = 6669
 	SeedPhrase           = "github.com/rancher-sandbox/rancher-desktop-networking"
-	timeoutSeconds       = 10
+	timeoutSeconds       = 120
 )
 
 func main() {

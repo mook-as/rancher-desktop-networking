@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"time"
@@ -19,23 +18,18 @@ import (
 	"github.com/songgao/water"
 	"github.com/vishvananda/netlink"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
-
-	"github.com/linuxkit/virtsock/pkg/vsock"
 )
 
 var (
-	tapIface string
 	debug    bool
+	tapIface string
 )
 
 const (
-	defaultNameSpace   = "rd1"
-	defaultTapDevice   = "eth0"
-	defaultMacAddr     = "5a:94:ef:e4:0c:ee"
-	defaultMTU         = 4000
-	SeedPhrase         = "github.com/rancher-sandbox/rancher-desktop-networking"
-	vsockHandshakePort = 6669
-	vsockDialPort      = 6655
+	defaultNameSpace = "rd1"
+	defaultTapDevice = "eth0"
+	defaultMacAddr   = "5a:94:ef:e4:0c:ee"
+	defaultMTU       = 4000
 )
 
 func main() {
@@ -43,7 +37,13 @@ func main() {
 	flag.StringVar(&tapIface, "tap-interface", defaultTapDevice, "tap interface name")
 	flag.Parse()
 
-	go listenForHandshake()
+	f, err := os.OpenFile("/var/log/network-switch", os.O_WRONLY|os.O_CREATE, 0755)
+	if err != nil {
+		logrus.Fatal(err)
+	}
+	logrus.SetOutput(f)
+	connFile := os.NewFile(uintptr(3), "connection")
+	defer connFile.Close()
 
 	// this should never happend
 	if err := checkForExsitingIf(defaultTapDevice); err != nil {
@@ -51,29 +51,15 @@ func main() {
 	}
 
 	for {
-		if err := run(); err != nil {
+		if err := run(connFile); err != nil {
 			logrus.Error(err)
 		}
 		time.Sleep(time.Second)
 	}
+
 }
 
-func run() error {
-	conn, err := vsock.Dial(vsock.CIDHost, vsockDialPort)
-	if err != nil {
-		return errors.Wrap(err, "cannot connect to host")
-	}
-	defer conn.Close()
-
-	// figure out if this is necessary
-	req, err := http.NewRequest("POST", "/connect", nil)
-	if err != nil {
-		return err
-	}
-	if err := req.Write(conn); err != nil {
-		return err
-	}
-
+func run(connFile *os.File) error {
 	tap, err := water.New(water.Config{
 		DeviceType: water.TAP,
 		PlatformSpecificParams: water.PlatformSpecificParams{
@@ -84,6 +70,7 @@ func run() error {
 		return errors.Wrapf(err, "cannot create %v tap device", tapIface)
 	}
 	defer tap.Close()
+
 	if err := linkUp(tapIface, defaultMacAddr); err != nil {
 		return errors.Wrapf(err, "cannot set mac address [%s] for %s tap device", defaultMacAddr, tapIface)
 	}
@@ -92,28 +79,15 @@ func run() error {
 	}
 
 	errCh := make(chan error, 1)
-	go tx(conn, tap, errCh, defaultMTU)
-	go rx(conn, tap, errCh, defaultMTU)
-	if err := dhcp(tapIface); err != nil {
-		errCh <- errors.Wrap(err, "dhcp error")
-	}
+	go tx(connFile, tap, errCh, defaultMTU)
+	go rx(connFile, tap, errCh, defaultMTU)
+	go func() {
+		if err := dhcp(tapIface); err != nil {
+			errCh <- errors.Wrap(err, "dhcp error")
+		}
+	}()
 
 	return <-errCh
-}
-
-func checkForExsitingIf(ifName string) error {
-	// equivalent to: `ip link show`
-	links, err := netlink.LinkList()
-	if err != nil {
-		return errors.Wrapf(err, "getting link devices failed")
-	}
-
-	for _, link := range links {
-		if link.Attrs().Name == ifName {
-			return errors.Errorf("%s interface already exist, exiting now...", ifName)
-		}
-	}
-	return nil
 }
 
 func loopbackUp() error {
@@ -158,30 +132,7 @@ func dhcp(iface string) error {
 	return cmd.Run()
 }
 
-func listenForHandshake() {
-	l, err := vsock.Listen(vsock.CIDAny, vsockHandshakePort)
-	if err != nil {
-		logrus.Fatalf("listenForHandshake listen failed: %v", err)
-	}
-	defer l.Close()
-
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			logrus.Errorf("listenForHandshake connection accept: %v", err)
-			continue
-		}
-		_, err = conn.Write([]byte(SeedPhrase))
-		if err != nil {
-			logrus.Errorf("listenForHandshake writing CIDHost: %v\n", err)
-		}
-		conn.Close()
-		logrus.Info("successful handshake with host switch")
-	}
-
-}
-
-func rx(conn net.Conn, tap *water.Interface, errCh chan error, mtu int) {
+func rx(conn io.Writer, tap *water.Interface, errCh chan error, mtu int) {
 	logrus.Info("waiting for packets...")
 	var frame ethernet.Frame
 	for {
@@ -212,7 +163,7 @@ func rx(conn net.Conn, tap *water.Interface, errCh chan error, mtu int) {
 	}
 }
 
-func tx(conn net.Conn, tap *water.Interface, errCh chan error, mtu int) {
+func tx(conn io.Reader, tap *water.Interface, errCh chan error, mtu int) {
 	sizeBuf := make([]byte, 2)
 	buf := make([]byte, defaultMTU+header.EthernetMinimumSize)
 
@@ -248,4 +199,19 @@ func tx(conn net.Conn, tap *water.Interface, errCh chan error, mtu int) {
 			return
 		}
 	}
+}
+
+func checkForExsitingIf(ifName string) error {
+	// equivalent to: `ip link show`
+	links, err := netlink.LinkList()
+	if err != nil {
+		return errors.Wrapf(err, "getting link devices failed")
+	}
+
+	for _, link := range links {
+		if link.Attrs().Name == ifName {
+			return errors.Errorf("%s interface already exist, exiting now...", ifName)
+		}
+	}
+	return nil
 }

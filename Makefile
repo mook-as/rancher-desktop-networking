@@ -1,7 +1,7 @@
 LDFLAGS = -ldflags '-s -w'
 
 .PHONY: build
-build: host-switch vm-switch namespace-setup
+build: host-switch vm-switch namespace-setup handshake
 
 .PHONY: host-switch
 host-switch:
@@ -14,6 +14,10 @@ vm-switch:
 .PHONY: namespace-setup
 namespace-setup:
 			GOOS=linux CGO_ENABLED=0 go build $(LDFLAGS) -o bin/namespace-setup namespace/setup.go
+
+.PHONY: handshake
+handshake:
+			GOOS=linux CGO_ENABLED=0 go build $(LDFLAGS) -o bin/handshake handshake/run.go
 
 .PHONY: clean
 clean:
