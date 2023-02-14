@@ -33,15 +33,10 @@ const (
 )
 
 func main() {
-	flag.BoolVar(&debug, "debug", false, "enable debug flag")
+	flag.BoolVar(&debug, "debug", true, "enable debug flag")
 	flag.StringVar(&tapIface, "tap-interface", defaultTapDevice, "tap interface name")
 	flag.Parse()
 
-	f, err := os.OpenFile("/var/log/network-switch", os.O_WRONLY|os.O_CREATE, 0755)
-	if err != nil {
-		logrus.Fatal(err)
-	}
-	logrus.SetOutput(f)
 	connFile := os.NewFile(uintptr(3), "connection")
 	defer connFile.Close()
 

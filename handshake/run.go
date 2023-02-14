@@ -82,16 +82,20 @@ func main() {
 	if err := unshareCmd.Start(); err != nil {
 		logrus.Fatalf("could not start the unshare process: %v", err)
 	}
+	go func() {
+		err := unshareCmd.Wait()
+		logrus.Infof("unshared finished with %v", err)
+	}()
 
 	// /run/wsl-init.pid
-	unsharePID := strconv.Itoa(unshareCmd.Process.Pid)
+	unsharePID := strconv.Itoa(os.Getppid())
 
 	err = os.WriteFile("/run/wsl-init.pid", []byte(unsharePID), 0644)
 	if err != nil{
 		logrus.Fatal(err)
 	}
-	logrus.Infof("unshare pid is : %v", unsharePID)
-	logrus.Info("unshare arg is %s", unshareArg)
+	logrus.Infof("unshare pid is: %v", unsharePID)
+	logrus.Infof("unshare arg is: %s", unshareArg)
 
 	// start the child process
 	// the child process will run in the new namespace the reason behind this subprocess
@@ -108,7 +112,20 @@ func main() {
 		logrus.Fatalf("could not start the child process: %v", err)
 	}
 
+	go func() {
+		err := subProcess.Wait()
+		logrus.Infof("vm-switch finished with %v", err)
+	}()
+
 	logrus.Infof("successfully started the child process vm-switch running with a PID: %v", subProcess.Process.Pid)
+
+	// Debugging
+	ps := exec.Command("/bin/ps", "-A", "-o", "pid,ppid,args")
+	ps.Stdout = os.Stdout
+	ps.Stderr = os.Stderr
+	if err := ps.Run(); err != nil {
+		logrus.Errorf("failed to run ps: %v", err)
+	}
 }
 
 func listenForHandshake(done chan<- struct{}) {
