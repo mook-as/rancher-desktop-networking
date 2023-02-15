@@ -101,6 +101,7 @@ func main() {
 	if err != nil {
 		logrus.Fatalf("cannot connect to host: %v", err)
 	}
+	logrus.Debugf("dialed host %v:%d: %+v", vsock.CIDHost, vsockDialPort, conn)
 
 	if err = os.Remove(pipePath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		logrus.Fatalf("failed to delete existing pipe: %v", err)

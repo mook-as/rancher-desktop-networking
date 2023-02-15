@@ -206,10 +206,15 @@ func run(ctx context.Context, g *errgroup.Group, config *types.Configuration, ln
 	logrus.Info("waiting for clients...")
 	go func() {
 		for {
-			conn := ln.Accept()
-			err := Pipe(conn, vn)
+			conn, err := ln.Accept()
+			if err != nil {
+				logrus.Errorf("failed to accept pipe: %v", err)
+			}
+			err = vn.AcceptQemu(ctx, conn)
 			if err != nil {
 				logrus.Errorf("pipe closed: %v", err)
+			} else {
+				logrus.Infof("Accepted connection: ctx=%+v conn=%+v", ctx, conn)
 			}
 		}
 	}()
