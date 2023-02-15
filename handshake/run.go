@@ -7,9 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"path"
 	"strconv"
-	"syscall"
 	"time"
 
 	"github.com/linuxkit/virtsock/pkg/vsock"
@@ -29,7 +27,6 @@ const (
 	vsockHandshakePort = 6669
 	vsockDialPort      = 6655
 	SeedPhrase         = "github.com/rancher-sandbox/rancher-desktop-networking"
-	pipePath = "/run/netns/rd-pipe"
 )
 
 
@@ -103,29 +100,7 @@ func main() {
 	}
 	logrus.Debugf("dialed host %v:%d: %+v", vsock.CIDHost, vsockDialPort, conn)
 
-	if err = os.Remove(pipePath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		logrus.Fatalf("failed to delete existing pipe: %v", err)
-	}
-	if err = os.MkdirAll(path.Dir(pipePath), 0o755); err != nil {
-		logrus.Fatalf("failed to create pipe directory %s: %v", path.Dir(pipePath), err)
-	}
-	if err = syscall.Mkfifo(pipePath, 0600); err != nil {
-		logrus.Fatalf("failed to create fifo: %v", err)
-	}
-	pipe, err := os.OpenFile(pipePath, os.O_RDWR | os.O_CREATE, 0o600 | os.ModeNamedPipe)
-	if err != nil {
-		logrus.Fatalf("could not open named pipe")
-	}
-
 	errGroup := errgroup.Group{}
-
-	errGroup.Go(func() error {
-		err := Pipe(pipe, conn)
-		if err != nil {
-			return fmt.Errorf("failed to pipe connection: %w", err)
-		}
-		return nil
-	})
 
 	// setup network namespace
 	_, err = configureNamespace("rd1")
@@ -166,6 +141,11 @@ func main() {
 		subProcess.Stdout = logFile
 		subProcess.Stderr = logFile
 	}
+	connFile, err := conn.File()
+	if err != nil {
+		logrus.Fatalf("failed to get vsock connection fd: %v", err)
+	}
+	subProcess.ExtraFiles = []*os.File{ connFile}
 	if err := subProcess.Start(); err != nil {
 		logrus.Fatalf("could not start the child process: %v", err)
 	}

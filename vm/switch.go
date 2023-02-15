@@ -41,7 +41,6 @@ const (
 	defaultTapDevice = "eth0"
 	defaultMacAddr   = "5a:94:ef:e4:0c:ee"
 	defaultMTU       = 4000
-	pipePath =  "/run/netns/rd-pipe"
 )
 
 type syncer interface {
@@ -59,10 +58,7 @@ func main() {
 		logrus.SetLevel(logrus.DebugLevel)
 	}
 
-	connFile, err := os.OpenFile(pipePath, os.O_RDWR, 0o600 | os.ModeNamedPipe)
-	if err != nil {
-		logrus.Fatalf("could not open named pipe")
-	}
+	connFile := os.NewFile(uintptr(3), "vsock connection")
 	defer connFile.Close()
 
 	logrus.Infof("Got connection: %v", connFile)
