@@ -8,6 +8,8 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/google/gopacket"
@@ -20,6 +22,15 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 )
 
+/*
+#cgo CFLAGS: -Wall
+extern void nsenter();
+void __attribute__((constructor)) init(void) {
+	nsenter();
+}
+*/
+import "C"
+
 var (
 	debug    bool
 	tapIface string
@@ -30,15 +41,31 @@ const (
 	defaultTapDevice = "eth0"
 	defaultMacAddr   = "5a:94:ef:e4:0c:ee"
 	defaultMTU       = 4000
+	pipePath =  "/run/netns/rd-pipe"
 )
 
+type syncer interface {
+	Sync() error
+}
+
 func main() {
+	signal.Ignore(syscall.SIGHUP)
+
 	flag.BoolVar(&debug, "debug", true, "enable debug flag")
 	flag.StringVar(&tapIface, "tap-interface", defaultTapDevice, "tap interface name")
 	flag.Parse()
 
-	connFile := os.NewFile(uintptr(3), "connection")
+	if debug {
+		logrus.SetLevel(logrus.DebugLevel)
+	}
+
+	connFile, err := os.OpenFile(pipePath, os.O_RDWR, 0o600 | os.ModeNamedPipe)
+	if err != nil {
+		logrus.Fatalf("could not open named pipe")
+	}
 	defer connFile.Close()
+
+	logrus.Infof("Got connection: %v", connFile)
 
 	// this should never happend
 	if err := checkForExsitingIf(defaultTapDevice); err != nil {
@@ -66,12 +93,17 @@ func run(connFile *os.File) error {
 	}
 	defer tap.Close()
 
+	logrus.Debugf("Created tap device %s: %v", tapIface, tap)
+	defer logrus.Debug("Closing tap device")
+
 	if err := linkUp(tapIface, defaultMacAddr); err != nil {
 		return errors.Wrapf(err, "cannot set mac address [%s] for %s tap device", defaultMacAddr, tapIface)
 	}
 	if err := loopbackUp(); err != nil {
 		return errors.Wrap(err, "failed enable loop back")
 	}
+
+	logrus.Debugf("Setup complete for tap interface %s(%s) + loopback", tapIface, defaultMacAddr)
 
 	errCh := make(chan error, 1)
 	go tx(connFile, tap, errCh, defaultMTU)
@@ -139,11 +171,6 @@ func rx(conn io.Writer, tap *water.Interface, errCh chan error, mtu int) {
 		}
 		frame = frame[:n]
 
-		if debug {
-			packet := gopacket.NewPacket(frame, layers.LayerTypeEthernet, gopacket.Default)
-			logrus.Info(packet.String())
-		}
-
 		size := make([]byte, 2)
 		binary.LittleEndian.PutUint16(size, uint16(n))
 
@@ -154,6 +181,17 @@ func rx(conn io.Writer, tap *water.Interface, errCh chan error, mtu int) {
 		if _, err := conn.Write(frame); err != nil {
 			errCh <- errors.Wrap(err, "cannot write packet to socket")
 			return
+		}
+
+		if s, ok := conn.(syncer); ok {
+			if err := s.Sync(); err != nil {
+				logrus.Errorf("failed to sync vm->host: %v", err)
+			}
+		}
+
+		if debug {
+			packet := gopacket.NewPacket(frame, layers.LayerTypeEthernet, gopacket.Default)
+			logrus.Infof("wrote packet (vm -> host %d): %s", size, packet.String())
 		}
 	}
 }
@@ -174,6 +212,10 @@ func tx(conn io.Reader, tap *water.Interface, errCh chan error, mtu int) {
 		}
 		size := int(binary.LittleEndian.Uint16(sizeBuf[0:2]))
 
+		if cap(buf) < size {
+			buf = make([]byte, size)
+		}
+
 		n, err = io.ReadFull(conn, buf[:size])
 		if err != nil {
 			errCh <- errors.Wrap(err, "cannot read payload from socket")
@@ -184,14 +226,14 @@ func tx(conn io.Reader, tap *water.Interface, errCh chan error, mtu int) {
 			return
 		}
 
-		if debug {
-			packet := gopacket.NewPacket(buf[:size], layers.LayerTypeEthernet, gopacket.Default)
-			logrus.Info(packet.String())
-		}
-
 		if _, err := tap.Write(buf[:size]); err != nil {
 			errCh <- errors.Wrap(err, "cannot write packet to tap")
 			return
+		}
+
+		if debug {
+			packet := gopacket.NewPacket(buf[:size], layers.LayerTypeEthernet, gopacket.Default)
+			logrus.Infof("Read packet (host -> vm %d): %s", size, packet.String())
 		}
 	}
 }

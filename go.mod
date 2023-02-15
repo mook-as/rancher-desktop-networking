@@ -10,7 +10,7 @@ require (
 	github.com/sirupsen/logrus v1.9.0
 	github.com/songgao/packets v0.0.0-20160404182456-549a10cd4091
 	github.com/songgao/water v0.0.0-20200317203138-2b4b6d7c09d8
-	github.com/vishvananda/netlink v1.1.1-0.20201029203352-d40f9887b852
+	github.com/vishvananda/netlink v1.1.1-0.20210330154013-f5de75959ad5
 	gvisor.dev/gvisor v0.0.0-20221216231429-a78e892a26d2
 )
 
@@ -22,6 +22,7 @@ require (
 	golang.org/x/crypto v0.1.0 // indirect
 	golang.org/x/mod v0.6.0 // indirect
 	golang.org/x/net v0.4.0 // indirect
+	golang.org/x/time v0.0.0-20191024005414-555d28b269f0 // indirect
 	golang.org/x/tools v0.2.0 // indirect
 	inet.af/tcpproxy v0.0.0-20220326234310-be3ee21c9fa0 // indirect
 )
@@ -35,5 +36,4 @@ require (
 	github.com/vishvananda/netns v0.0.0-20211101163701-50045581ed74
 	golang.org/x/sync v0.1.0
 	golang.org/x/sys v0.4.0
-	golang.org/x/time v0.0.0-20191024005414-555d28b269f0 // indirect
 )

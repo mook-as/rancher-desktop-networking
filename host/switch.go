@@ -42,7 +42,7 @@ const (
 	vsockPort            = 6655
 	vsockHandshakePort   = 6669
 	SeedPhrase           = "github.com/rancher-sandbox/rancher-desktop-networking"
-	timeoutSeconds       = 120
+	timeoutSeconds       = 10 * 60
 )
 
 func main() {
@@ -137,13 +137,82 @@ func main() {
 	}
 }
 
+type loggingListener struct {
+	l net.Listener
+}
+
+func (l *loggingListener) Accept() (net.Conn, error) {
+	logrus.Debugf("vnet accept()")
+	return l.l.Accept()
+}
+
+func (l *loggingListener) Addr() net.Addr {
+	logrus.Debugf("vnet addr()")
+	return l.l.Addr()
+}
+
+func (l *loggingListener) Close() error {
+	logrus.Debugf("vnet close()")
+	return l.l.Close()
+}
+
+
+// Pipe bidirectionally between two streams.
+func Pipe(c1, c2 io.ReadWriteCloser) error {
+	copy := func(reader io.Reader, writer io.Writer, info string) <-chan error {
+		ch := make(chan error)
+		go func() {
+			for {
+				n, err := io.Copy(writer, reader)
+				if n > 0 || err != nil {
+					logrus.Infof("copied %d bytes (%s): %v", n, info, err)
+				}
+				if err != nil {
+					ch <- err
+				}
+			}
+		}()
+		return ch
+	}
+
+	ch1 := copy(c1, c2, "file->vsock")
+	ch2 := copy(c2, c1, "vsock->file")
+	select {
+	case err := <-ch1:
+		c1.Close()
+		c2.Close()
+		<-ch2
+		if err != io.EOF {
+			return err
+		}
+	case err := <-ch2:
+		c1.Close()
+		c2.Close()
+		<-ch1
+		if err != io.EOF {
+			return err
+		}
+	}
+
+	logrus.Infof("Finished copying!")
+	return nil
+}
+
 func run(ctx context.Context, g *errgroup.Group, config *types.Configuration, ln net.Listener) error {
 	vn, err := virtualnetwork.New(config)
 	if err != nil {
 		return err
 	}
 	logrus.Info("waiting for clients...")
-	httpServe(ctx, g, ln, withProfiler(vn))
+	go func() {
+		for {
+			conn := ln.Accept()
+			err := Pipe(conn, vn)
+			if err != nil {
+				logrus.Errorf("pipe closed: %v", err)
+			}
+		}
+	}()
 
 	vnLn, err := vn.Listen("tcp", fmt.Sprintf("%s:80", gatewayIP))
 	if err != nil {
@@ -153,14 +222,14 @@ func run(ctx context.Context, g *errgroup.Group, config *types.Configuration, ln
 	mux.Handle("/services/forwarder/all", vn.Mux())
 	mux.Handle("/services/forwarder/expose", vn.Mux())
 	mux.Handle("/services/forwarder/unexpose", vn.Mux())
-	httpServe(ctx, g, vnLn, mux)
+	httpServe(ctx, g, &loggingListener{vnLn}, mux)
 
 	g.Go(func() error {
 	debugLog:
 		for {
 			select {
 			case <-time.After(5 * time.Second):
-				fmt.Printf("%v sent to the VM, %v received from the VM\n", humanize.Bytes(vn.BytesSent()), humanize.Bytes(vn.BytesReceived()))
+				logrus.Debugf("%v sent to the VM, %v received from the VM\n", humanize.Bytes(vn.BytesSent()), humanize.Bytes(vn.BytesReceived()))
 			case <-ctx.Done():
 				break debugLog
 			}
@@ -296,26 +365,34 @@ func handshake(vmGUID hvsock.GUID, peerHandshakePort uint32, found chan<- hvsock
 			logrus.Infof("attempt to handshake with [%s], goroutine is terminated", vmGUID.String())
 			return
 		case <-attempInterval.C:
-			conn, err := hvsock.Dial(addr)
-			if err != nil {
-				attempt++
-				logrus.Debugf("handshake attempt[%v] to dial into VM, looking for vsock-peer", attempt)
-				continue
-			}
-			seed, err := readSeed(conn)
-			if err != nil {
-				logrus.Errorf("hosthandshake attempt to read the seed: %v", err)
-			}
-			if err := conn.Close(); err != nil {
-				logrus.Errorf("hosthandshake closing connection: %v", err)
-			}
-			if seed == SeedPhrase {
-				logrus.Infof("successfully estabilished a handshake with a peer: %s", vmGUID.String())
-				found <- vmGUID
-				return
-			}
-			logrus.Infof("hosthandshake failed to match the seed phrase with a peer running in: %s", vmGUID.String())
-			return
+			// Spawn a goroutine here to ensure we don't get stuck on a timeout
+			go func() {
+				conn, err := hvsock.Dial(addr)
+				select {
+				case <-done:
+					// If we're already connected, no need to print more things.
+					return
+				default:
+				}
+				if err != nil {
+					attempt++
+					logrus.Debugf("handshake attempt[%v] to dial into VM [%s], looking for vsock-peer", attempt, vmGUID.String())
+					return
+				}
+				seed, err := readSeed(conn)
+				if err != nil {
+					logrus.Errorf("hosthandshake attempt to read the seed: %v", err)
+				}
+				if err := conn.Close(); err != nil {
+					logrus.Errorf("hosthandshake closing connection: %v", err)
+				}
+				if seed == SeedPhrase {
+					logrus.Infof("successfully estabilished a handshake with a peer: %s", vmGUID.String())
+					found <- vmGUID
+					return
+				}
+				logrus.Infof("hosthandshake failed to match the seed phrase with a peer running in: %s", vmGUID.String())
+			}()
 		}
 	}
 }

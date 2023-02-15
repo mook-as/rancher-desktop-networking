@@ -9,7 +9,7 @@ host-switch:
 
 .PHONY: vm-switch
 vm-switch:
-			GOOS=linux CGO_ENABLED=0 go build $(LDFLAGS) -o bin/vm-switch vm/switch.go
+			GOOS=linux CGO_ENABLED=1 go build $(LDFLAGS) -o bin/vm-switch ./vm/...
 
 .PHONY: namespace-setup
 namespace-setup:
