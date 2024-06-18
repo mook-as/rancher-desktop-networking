@@ -269,7 +269,7 @@ func unshareCmd(ctx context.Context, ns netns.NsHandle, args string) error {
 	unshareCmd := exec.CommandContext( //nolint:gosec // no security concern with the potentially tainted command arguments
 		ctx,
 		nsenter, fmt.Sprintf("-n/proc/%d/fd/%d", os.Getpid(), ns), "-F",
-		unshare, "--pid", "--mount-proc", "--fork", "--propagation", "slave", args)
+		unshare, "--pid", "--cgroup", "--mount-proc", "--fork", "--propagation", "slave", args)
 	unshareCmd.Stdout = os.Stdout
 	unshareCmd.Stderr = os.Stderr
 	if err := unshareCmd.Start(); err != nil {
